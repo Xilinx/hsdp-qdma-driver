@@ -1,0 +1,555 @@
+diff --git a/QDMA/linux-kernel/driver/src/Makefile b/QDMA/linux-kernel/driver/src/Makefile
+index 1b5b9bd..277c8c3 100755
+--- a/QDMA/linux-kernel/driver/src/Makefile
++++ b/QDMA/linux-kernel/driver/src/Makefile
+@@ -52,7 +52,12 @@ EXTRA_CFLAGS += -I$(srcdir)/../libqdma/qdma_access/qdma_soft_access
+ EXTRA_CFLAGS += -I$(srcdir)/../libqdma/qdma_access/eqdma_soft_access
+ EXTRA_CFLAGS += -I$(srcdir)/../libqdma/qdma_access/eqdma_cpm5_access
+ EXTRA_CFLAGS += -I$(srcdir)/../libqdma/qdma_access/qdma_cpm4_access
+-EXTRA_CFLAGS += -I.
++EXTRA_CFLAGS += -I$(srcdir)
++
++ifneq ($(wildcard $(srcdir)/extra),)
++  EXTRA_CFLAGS += -I$(srcdir)/extra
++  EXTRA_CFLAGS += -DUSE_EXTRA
++endif
+ 
+ # linux >= 3.13 genl_ops become part of the genl_family. And although
+ # genl_register_family_with_ops() is still retained until kernel 4.10,
+@@ -99,7 +104,7 @@ else
+   override symverfile =
+ endif
+ 
+-DRV_OBJS := nl.o cdev.o qdma_mod.o
++DRV_OBJS := nl.o cdev.o qdma_mod.o $(patsubst $(srcdir)/extra/%.c,extra/%.o,$(wildcard $(srcdir)/extra/*.c))
+ 
+ LIBQDMA_OBJS := libqdma/qdma_mbox.o libqdma/qdma_intr.o libqdma/qdma_st_c2h.o \
+ 	libqdma/qdma_thread.o libqdma/libqdma_export.o libqdma/qdma_context.o \
+diff --git a/QDMA/linux-kernel/driver/src/cdev.c b/QDMA/linux-kernel/driver/src/cdev.c
+index bd7d681..e95c1b5 100755
+--- a/QDMA/linux-kernel/driver/src/cdev.c
++++ b/QDMA/linux-kernel/driver/src/cdev.c
+@@ -43,6 +43,10 @@
+ #include "qdma_mod.h"
+ #include "libqdma/xdev.h"
+ 
++#ifdef USE_EXTRA
++extern void init_extra(struct qdma_cdev *xcdev);
++#endif
++
+ /*
+  * @struct - xlnx_phy_dev
+  * @brief	xilinx board device data members
+@@ -698,6 +702,10 @@ int qdma_cdev_create(struct qdma_cdev_cb *xcb, struct pci_dev *pdev,
+ 	xcdev->fp_rw = qdma_request_submit;
+ 	xcdev->fp_aiorw = qdma_batch_request_submit;
+ 
++#ifdef USE_EXTRA
++    init_extra(xcdev);
++#endif
++
+ 	*xcdev_pp = xcdev;
+ 	return 0;
+ 
+diff --git a/QDMA/linux-kernel/driver/src/extra/.gitignore b/QDMA/linux-kernel/driver/src/extra/.gitignore
+new file mode 100644
+index 0000000..c6127b3
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/extra/.gitignore
+@@ -0,0 +1,52 @@
++# Prerequisites
++*.d
++
++# Object files
++*.o
++*.ko
++*.obj
++*.elf
++
++# Linker output
++*.ilk
++*.map
++*.exp
++
++# Precompiled Headers
++*.gch
++*.pch
++
++# Libraries
++*.lib
++*.a
++*.la
++*.lo
++
++# Shared objects (inc. Windows DLLs)
++*.dll
++*.so
++*.so.*
++*.dylib
++
++# Executables
++*.exe
++*.out
++*.app
++*.i*86
++*.x86_64
++*.hex
++
++# Debug files
++*.dSYM/
++*.su
++*.idb
++*.pdb
++
++# Kernel Module Compile Results
++*.mod*
++*.cmd
++.tmp_versions/
++modules.order
++Module.symvers
++Mkfile.old
++dkms.conf
+diff --git a/QDMA/linux-kernel/driver/src/extra/README.md b/QDMA/linux-kernel/driver/src/extra/README.md
+new file mode 100644
+index 0000000..2807ad1
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/extra/README.md
+@@ -0,0 +1,18 @@
++# hsdp-qdma-driver
++Builds on dma-ip-drivers to support hsdp through qdma streaming
++
++## Setup
++1. Clone github.com/Xilinx/dma_ip_drivers
++2. cd dma_ip_drivers/QDMA/linux-kernel/driver/src  
++3. Clone gitenterprise.xilinx.com/elessar/hsdp-qdma-driver
++5. cd hsdp-qdma-driver/scripts
++6. ./install.sh
++    1. hsdp-qmda-driver will be renamed to extra during install
++7. Reboot
++8. Run dma_ip_drivers/QDMA/linux-kernel/driver/src/extra/scripts/setup.sh <bus number of devic>
++    1. Included any leading zeros in bus number (e.g. setup.sh 04)
++
++## Run
++1. ls /dev/qdma*
++2. hw_server -e "set dpc-pcie <path to qdma dev above>"
++
+diff --git a/QDMA/linux-kernel/driver/src/extra/hsdp.c b/QDMA/linux-kernel/driver/src/extra/hsdp.c
+new file mode 100644
+index 0000000..f3e61b6
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/extra/hsdp.c
+@@ -0,0 +1,364 @@
++/*
++ * Xilinx HSDP PCIe Driver
++ * Copyright (C) 2021-2022 Xilinx Corporation
++ * Copyright (C) 2022-2023, Advanced Micro Devices, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ */
++#define pr_fmt(fmt)	KBUILD_MODNAME ":%s: " fmt, __func__
++#include <asm/cacheflush.h>
++#include <linux/device.h>
++#include <linux/errno.h>
++#include <linux/fs.h>
++#include <linux/kernel.h>
++#include <linux/pci.h>
++#include <linux/slab.h>
++#include <linux/types.h>
++#include <linux/uaccess.h>
++#include <linux/slab.h>
++#include <linux/aio.h>
++#include <linux/sched.h>
++#include <linux/wait.h>
++#include <linux/kthread.h>
++#include <linux/version.h>
++#include <linux/delay.h>
++#if KERNEL_VERSION(3, 16, 0) <= LINUX_VERSION_CODE
++#include <linux/uio.h>
++#endif
++
++#include "qdma_mod.h"
++#include "libqdma/xdev.h"
++#include "cdev.h"
++
++#define MIN(a, b) (a < b ? a : b)
++
++void init_extra(struct qdma_cdev *xcdev);
++
++//#define __DPC_DEBUG__ 1
++
++struct hsdp_packet {
++    uint8_t  opcode;  // 'e' egress, 'i' ingress
++    uint32_t word_count;
++    uint8_t *buf;
++};
++
++#define XIL_HSDP_MAGIC 0x485344//50  // "HSDP"
++#define XDMA_IOC_HSDP_OP _IOWR(XIL_HSDP_MAGIC, 0, struct hsdp_packet)
++
++#define DPC_PACKET_SIZE        1032
++#define DMA_BUFFER_SIZE 4096
++
++/*
++ * cdev r/w
++ */
++static inline void iocb_release(struct qdma_io_cb *iocb)
++{
++	if (iocb->pages)
++		iocb->pages = NULL;
++	kfree(iocb->sgl);
++	iocb->sgl = NULL;
++	iocb->buf = NULL;
++}
++
++static void unmap_user_buf(struct qdma_io_cb *iocb, bool write)
++{
++	int i;
++
++	if (!iocb->pages || !iocb->pages_nr)
++		return;
++
++	for (i = 0; i < iocb->pages_nr; i++) {
++		if (iocb->pages[i]) {
++			if (!write)
++				set_page_dirty(iocb->pages[i]);
++			put_page(iocb->pages[i]);
++		} else
++			break;
++	}
++
++	if (i != iocb->pages_nr)
++		pr_err("sgl pages %d/%u.\n", i, iocb->pages_nr);
++
++	iocb->pages_nr = 0;
++}
++
++static int map_user_buf_to_sgl(struct qdma_io_cb *iocb, bool write)
++{
++	unsigned long len = iocb->len;
++	char *buf = iocb->buf;
++	struct qdma_sw_sg *sg;
++	unsigned int pg_off = offset_in_page(buf);
++	unsigned int pages_nr = (len + pg_off + PAGE_SIZE - 1) >> PAGE_SHIFT;
++	int i;
++	int rv;
++
++	if (len == 0)
++		pages_nr = 1;
++	if (pages_nr == 0)
++		return -EINVAL;
++
++	iocb->pages_nr = 0;
++	sg = kmalloc(pages_nr * (sizeof(struct qdma_sw_sg) +
++			sizeof(struct page *)), GFP_KERNEL);
++	if (!sg) {
++		pr_err("sgl allocation failed for %u pages", pages_nr);
++		return -ENOMEM;
++	}
++	memset(sg, 0, pages_nr * (sizeof(struct qdma_sw_sg) +
++			sizeof(struct page *)));
++	iocb->sgl = sg;
++
++	iocb->pages = (struct page **)(sg + pages_nr);
++	rv = get_user_pages_fast((unsigned long)buf, pages_nr, 1/* write */,
++				iocb->pages);
++	/* No pages were pinned */
++	if (rv < 0) {
++		pr_err("unable to pin down %u user pages, %d.\n",
++			pages_nr, rv);
++		goto err_out;
++	}
++	/* Less pages pinned than wanted */
++	if (rv != pages_nr) {
++		pr_err("unable to pin down all %u user pages, %d.\n",
++			pages_nr, rv);
++		iocb->pages_nr = rv;
++		rv = -EFAULT;
++		goto err_out;
++	}
++
++	for (i = 1; i < pages_nr; i++) {
++		if (iocb->pages[i - 1] == iocb->pages[i]) {
++			pr_err("duplicate pages, %d, %d.\n",
++				i - 1, i);
++			iocb->pages_nr = pages_nr;
++			rv = -EFAULT;
++			goto err_out;
++		}
++	}
++
++	sg = iocb->sgl;
++	for (i = 0; i < pages_nr; i++, sg++) {
++		unsigned int offset = offset_in_page(buf);
++		unsigned int nbytes = min_t(unsigned int, PAGE_SIZE - offset,
++						len);
++		struct page *pg = iocb->pages[i];
++
++		flush_dcache_page(pg);
++
++		sg->next = sg + 1;
++		sg->pg = pg;
++		sg->offset = offset;
++		sg->len = nbytes;
++		sg->dma_addr = 0UL;
++
++		buf += nbytes;
++		len -= nbytes;
++	}
++
++	iocb->sgl[pages_nr - 1].next = NULL;
++	iocb->pages_nr = pages_nr;
++	return 0;
++
++err_out:
++	unmap_user_buf(iocb, write);
++	iocb_release(iocb);
++
++	return rv;
++}
++
++static ssize_t cdev_gen_read_write(struct qdma_cdev *xcdev, char __user *buf,
++		size_t count, loff_t *pos, bool write)
++{
++	struct qdma_io_cb iocb;
++	struct qdma_request *req = &iocb.req;
++	ssize_t res = 0;
++	int rv;
++	unsigned long qhndl;
++
++	if (!xcdev) {
++		pr_err("xcdev 0x%p, xcdev NULL, 0x%p,%llu, pos %llu, W %d.\n",
++			xcdev, buf, (u64)count, (u64)*pos, write);
++		return -EINVAL;
++	}
++
++	if (!xcdev->fp_rw) {
++		pr_err("xcdev 0x%p, %s, NO rw, 0x%p,%llu, pos %llu, W %d.\n",
++			xcdev, xcdev->name, buf, (u64)count, (u64)*pos, write);
++		return -EINVAL;
++	}
++
++	qhndl = write ? xcdev->h2c_qhndl : xcdev->c2h_qhndl;
++
++#ifdef __DPC_DEBUG__ 
++	pr_info("%s, priv 0x%lx: buf 0x%p,%llu, pos %llu, W %d.\n",
++		xcdev->name, qhndl, buf, (u64)count, (u64)*pos,
++		write);
++#endif
++
++	memset(&iocb, 0, sizeof(struct qdma_io_cb));
++	iocb.buf = buf;
++	iocb.len = count;
++	rv = map_user_buf_to_sgl(&iocb, write);
++	if (rv < 0)
++		return rv;
++
++	req->sgcnt = iocb.pages_nr;
++	req->sgl = iocb.sgl;
++	req->write = write ? 1 : 0;
++	req->dma_mapped = 0;
++	req->udd_len = 0;
++	req->ep_addr = (u64)*pos;
++	req->count = count;
++	req->timeout_ms = 100; //10 * 1000;	/* 10 seconds */
++	req->fp_done = NULL;		/* blocking */
++	req->h2c_eot = 1;		/* set to 1 for STM tests */
++
++	res = xcdev->fp_rw(xcdev->xcb->xpdev->dev_hndl, qhndl, req);
++
++    if (res < 0) {
++        pr_err("\t%s error %d\n", write ? "ingress" : "egress", (int) res);
++    }
++
++	unmap_user_buf(&iocb, write);
++	iocb_release(&iocb);
++
++	return res;
++}
++
++static int hsdp_run_packet(struct qdma_cdev *xcdev, struct hsdp_packet *packet) {
++    struct xlnx_pci_dev *xpdev = xcdev->xcb->xpdev;
++    size_t size = packet->word_count * 4;
++    ssize_t rv = 0;
++    loff_t pos = 0;
++
++    rv = qdma_device_write_user_register(xpdev, 0xA8, size);
++    if (rv < 0) goto cleanup;
++
++    cdev_gen_read_write(xcdev, packet->buf, size, &pos, 1);
++
++cleanup:
++    return rv;
++}
++
++static int hsdp_get_packet(struct qdma_cdev *xcdev, struct hsdp_packet *packet) {
++    struct xlnx_pci_dev *xpdev = xcdev->xcb->xpdev;
++    size_t size = 0;
++    int rv = 0;
++
++    uint32_t reg_val;
++    rv = qdma_device_read_user_register(xpdev, 0x74, &reg_val);
++    if (rv < 0) goto cleanup;
++
++    if (reg_val & 0x10000) {
++        loff_t pos = 0;
++        size = reg_val & 0xFFF;
++        packet->word_count = size>>2;
++        cdev_gen_read_write(xcdev, packet->buf, size, &pos, 0);
++    } else {
++        packet->word_count = 0;
++    }
++
++cleanup:
++    return rv;
++}
++
++static long hsdp_packet_ioctl_helper(struct qdma_cdev *xcdev, void __user *arg)
++{
++    struct hsdp_packet packet_obj;
++    char opcode;
++    uint32_t word_count;
++    int rv;
++
++    rv = copy_from_user((void *)&packet_obj, arg, sizeof(struct hsdp_packet));
++    if (rv) {
++        pr_info("copy_from_user packet_obj failed: %d.\n", rv);
++        goto cleanup;
++    }
++
++    opcode = packet_obj.opcode;
++    word_count = packet_obj.word_count;
++
++    if (word_count * 4 > DPC_PACKET_SIZE) {
++        pr_info("HSDP Packet IOCTL Invalid word_count\n");
++        return -EINVAL;
++    }
++
++    switch (opcode) {
++    case 'e':
++    {
++        rv = hsdp_get_packet(xcdev, &packet_obj);
++        if (rv) goto cleanup;
++        if (packet_obj.word_count) {
++            rv = copy_to_user(arg, (void *)&packet_obj, sizeof(struct hsdp_packet));
++            if (rv) {
++                pr_info("copy_to_user packet_obj failed: %d.\n", rv);
++                goto cleanup;
++            }
++        }
++        break;
++    }
++    case 'i':
++    {
++        rv = hsdp_run_packet(xcdev, &packet_obj);
++        break;
++    }
++    default:
++        pr_info("HSDP Packet IOCTL Invalid opcode\n");
++        return -EINVAL;
++    }
++
++cleanup:
++    return rv;
++}
++
++static long hsdp_ioctl(struct qdma_cdev *xcdev, unsigned int cmd, unsigned long arg) {
++    long status = 0;
++
++	//pr_info("%s: hsdp_ioctl 0x%x\n", xcdev->name, cmd);
++
++    switch (cmd)
++    {
++        case XDMA_IOC_HSDP_OP:
++            status = hsdp_packet_ioctl_helper(xcdev, (void __user *)arg);
++            break;
++        default:
++            pr_info("bad command 0x%X\n", cmd);
++            status = -ENOIOCTLCMD;
++            break;
++    }
++
++    return status;
++}
++
++static int hsdp_open(struct qdma_cdev *xcdev) {
++	pr_info("%s: \n", xcdev->name);
++
++    qdma_device_write_user_register(xcdev->xcb->xpdev, 0x0, 0);
++
++    return 0;
++}
++
++static int hsdp_close(struct qdma_cdev *xcdev) {
++
++    pr_info("%s: \n", xcdev->name);
++
++    return 0;
++}
++
++void init_extra(struct qdma_cdev *xcdev) {
++    xcdev->fp_open_extra = hsdp_open;
++    xcdev->fp_close_extra = hsdp_close;
++    xcdev->fp_ioctl_extra = hsdp_ioctl;
++}
+diff --git a/QDMA/linux-kernel/driver/src/extra/scripts/install.sh b/QDMA/linux-kernel/driver/src/extra/scripts/install.sh
+new file mode 100755
+index 0000000..6187d35
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/extra/scripts/install.sh
+@@ -0,0 +1,12 @@
++#!/bin/bash
++if [ -d "../../hsdp-qdma-driver" ]; then
++    mv ../../hsdp-qdma-driver ../../extra
++    cd .
++fi
++
++cd ../../../../
++make clean && make && $SUDO make install
++
++echo "------------------------------"
++echo "Restart machine to load driver"
++echo "Run setup.sh afterwards"
+diff --git a/QDMA/linux-kernel/driver/src/extra/scripts/setup.sh b/QDMA/linux-kernel/driver/src/extra/scripts/setup.sh
+new file mode 100755
+index 0000000..b43a580
+--- /dev/null
++++ b/QDMA/linux-kernel/driver/src/extra/scripts/setup.sh
+@@ -0,0 +1,13 @@
++#!/bin/bash
++if [ -z "$1" ]; then
++    echo "Needs card bus number"
++    exit 1
++fi
++
++sudo chmod o+w /sys/bus/pci/devices/0000\:${1}\:00.0/qdma/qmax
++sudo echo 10 > /sys/bus/pci/devices/0000\:${1}\:00.0/qdma/qmax
++cat /sys/bus/pci/devices/0000\:${1}\:00.0/qdma/qmax
++sudo dma-ctl qdma${1}000 q add list 0 1 mode st dir bi
++sudo chmod 777 /dev/qdma*-*
++sudo dma-ctl qdma${1}000 q start idx 0 dir bi
++sudo dma-ctl qdma${1}000 reg write bar 2 0x0 0
+diff --git a/QDMA/linux-kernel/scripts/qdma_generate_conf_file.sh b/QDMA/linux-kernel/scripts/qdma_generate_conf_file.sh
+index c66cb1a..8fc56c4 100755
+--- a/QDMA/linux-kernel/scripts/qdma_generate_conf_file.sh
++++ b/QDMA/linux-kernel/scripts/qdma_generate_conf_file.sh
+@@ -24,7 +24,7 @@
+ # 
+ 
+ 
+-function print_help() {
++print_help() {
+ 	echo ""
+ 	echo "Usage : $0 <bus_num> <num_pfs> <mode> <config_bar> <master_pf>"
+ 	echo "Ex : $0 0x06 4 0 0 0"
